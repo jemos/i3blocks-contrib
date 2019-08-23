@@ -25,15 +25,19 @@ use Getopt::Long;
 binmode(STDOUT, ":utf8");
 
 # default values
-my $t_warn = $ENV{T_WARN} || 70;
-my $t_crit = $ENV{T_CRIT} || 90;
+my $t_warn = $ENV{T_WARN} || undef;
+my $t_crit = $ENV{T_CRIT} || undef;
 my $chip = $ENV{SENSOR_CHIP} || "";
-my $temperature = -9999;
+my $multi = $ENV{MULTI_VALUE} || 0;
+my $verbose = 0;
+my $temperature = undef;
 
 sub help {
     print "Usage: temperature [-w <warning>] [-c <critical>] [--chip <chip>]\n";
     print "-w <percent>: warning threshold to become yellow\n";
     print "-c <percent>: critical threshold to become red\n";
+    print "-m: multiple values for this sensor (will calculate maximum value)\n";
+    print "-v: verbose output\n";
     print "--chip <chip>: sensor chip\n";
     exit 0;
 }
@@ -41,19 +45,67 @@ sub help {
 GetOptions("help|h" => \&help,
            "w=i"    => \$t_warn,
            "c=i"    => \$t_crit,
+           "m"      => \$multi,
+           "v"      => \$verbose,
            "chip=s" => \$chip);
 
+if($verbose) {
+  print("t_warn: $t_warn\n");
+  print("t_crit: $t_crit\n");
+  print("multi: $multi\n");
+  print("chip: $chip\n");
+}
+
 # Get chip temperature
-open (SENSORS, "sensors -u $chip |") or die;
-while (<SENSORS>) {
-    if (/^\s+temp1_input:\s+[\+]*([\-]*\d+\.\d)/) {
-        $temperature = $1;
-        last;
+my @out = `sensors -u $chip`;
+my $critv = undef;
+my $maxv = undef;
+my $count = 0;
+foreach(@out) {
+    my $line = $_;
+    chomp $line;
+
+    if (!defined($maxv) && $line =~ /^\s*temp[0-9]_max:\s+[\+]*([\-]*\d+\.\d)/) {
+        $maxv = $1;
+    }
+    if (!defined($critv) && $line =~ /^\s*temp[0-9]_crit:\s+[\+]*([\-]*\d+\.\d)/) {
+        $critv = $1;
+    }
+
+    if ($line =~ /^\s*temp[0-9]_input:\s+[\+]*([\-]*\d+\.\d)/) {
+	if ( $multi ) {
+		if ( !defined($temperature) || ($temperature < $1) ) {
+			$temperature = $1;
+		}
+	} else {
+		if ( !defined($temperature) ) {
+	        	$temperature = $1;
+		}
+	}
     }
 }
-close(SENSORS);
 
-$temperature eq -9999 and die 'Cannot find temperature';
+!defined($temperature) and die 'Cannot find temperature';
+
+# Set crit and warn automatically if user didn't provided one and we were able to retrieve one from sensors
+if( !defined($t_crit) ) {
+    if( !defined($critv) ) {
+	$t_crit = 90;
+    } else {
+	$t_crit = $critv;
+    }
+}
+if( !defined($t_warn) ) {
+    if( !defined($maxv) ) {
+	$t_warn = 70;
+    } else {
+	$t_warn = $maxv;
+    }
+}
+
+if ($verbose) {
+    print "temp=$temperature critv=$critv highv=$maxv t_crit=$t_crit t_warn=$t_warn multi=$multi\n";
+}
 
 # Print short_text, full_text
 print "$temperature°C\n" x2;
